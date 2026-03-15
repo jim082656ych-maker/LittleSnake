@@ -1,96 +1,64 @@
-package com.example.littlesnake
+package com.example.littlesnake // ⚠️ 貼上後，請務必確認這行的 package 名稱跟你的專案一致！
 
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Point
+import android.os.Handler
+import android.os.Looper
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
-import java.util.*
 import kotlin.math.abs
-import kotlin.random.Random
+
+// 1. 定義遊戲狀態機
+enum class GameState {
+    MENU, PLAYING, GAMEOVER
+}
 
 class SnakeView(context: Context, attrs: AttributeSet) : View(context, attrs) {
-    // 🎨 畫筆設定
-    private val paintBody = Paint().apply { color = Color.parseColor("#4CAF50"); isAntiAlias = true }
-    private val paintHead = Paint().apply { color = Color.parseColor("#66BB6A"); isAntiAlias = true }
-    private val paintApple = Paint().apply { color = Color.parseColor("#E53935"); isAntiAlias = true }
-    private val paintDetails = Paint().apply { isAntiAlias = true }
-    private val paintText = Paint().apply { color = Color.WHITE; textAlign = Paint.Align.CENTER; isAntiAlias = true }
 
-    // 🕹️ 遊戲核心數據
-    private var snake = mutableListOf(Pair(10, 10), Pair(10, 11), Pair(10, 12))
-    private var direction = Pair(0, -1)
-    private val gridSize = 20
-    private var timer: Timer? = null
-    private var apple = Pair(Random.nextInt(gridSize), Random.nextInt(gridSize))
-
-    private var startX = 0f
-    private var startY = 0f
-    private var score = 0
-    private var isPaused = false
-
-    // ⏳ 狀態機與時間管理
-    private enum class GameState { MENU, PLAYING, TIME_UP }
+    // --- 遊戲狀態與資料結構 ---
     private var currentState = GameState.MENU
-    private var endTimeMs: Long = 0
+    private val snakeBody = ArrayList<Point>()
+    private val snakeSize = 100f
 
-    init {
-        timer = Timer()
-        timer?.schedule(object : TimerTask() {
-            override fun run() {
+    // 🍎 蘋果與分數機制
+    private var apple = Point(-100, -100)
+    private var score = 0
+
+    // --- 🚀 動力系統變數 ---
+    private val gameHandler = Handler(Looper.getMainLooper())
+    private var direction = "UP"
+    private val delayMillis = 400L // 🐢 慢速友善：每 0.4 秒移動一格
+
+    // --- 👆 滑動偵測變數 ---
+    private var touchStartX = 0f
+    private var touchStartY = 0f
+    private val swipeThreshold = 50f
+
+    // --- 畫筆設定 ---
+    private val paintText = Paint().apply {
+        isAntiAlias = true
+        textAlign = Paint.Align.CENTER
+    }
+    private val paintSnake = Paint().apply {
+        isAntiAlias = true
+    }
+
+    // --- 節拍器邏輯 (遊戲循環 Game Loop) ---
+    private val gameLoop = object : Runnable {
+        override fun run() {
+            if (currentState == GameState.PLAYING) {
+                moveSnake()
+                invalidate()
+
+                // 只有在還活著 (PLAYING) 的時候，才預約下一次移動
                 if (currentState == GameState.PLAYING) {
-                    // 【修改】如果 endTimeMs 不是 -1 (代表有時間限制)，才檢查有沒有超時
-                    if (endTimeMs != -1L && System.currentTimeMillis() >= endTimeMs) {
-                        currentState = GameState.TIME_UP
-                    } else if (!isPaused) {
-                        moveSnake()
-                    }
+                    gameHandler.postDelayed(this, delayMillis)
                 }
-                postInvalidate()
             }
-        }, 0, 300)
-    }
-
-    // 啟動遊戲 (傳入 -1 代表不限制時間)
-    private fun startGame(minutes: Int) {
-        if (minutes == -1) {
-            endTimeMs = -1L // 設定為 -1，啟動無限模式
-        } else {
-            endTimeMs = System.currentTimeMillis() + (minutes * 60 * 1000L)
-        }
-
-        snake.clear()
-        snake.addAll(listOf(Pair(10, 10), Pair(10, 11), Pair(10, 12)))
-        direction = Pair(0, -1)
-        score = 0
-        isPaused = false
-        apple = Pair(Random.nextInt(gridSize), Random.nextInt(gridSize))
-        currentState = GameState.PLAYING
-    }
-
-    private fun moveSnake() {
-        val head = snake[0]
-        val newX = (head.first + direction.first + gridSize) % gridSize
-        val newY = (head.second + direction.second + gridSize) % gridSize
-        val newHead = Pair(newX, newY)
-
-        if (snake.contains(newHead)) {
-            snake.clear()
-            snake.addAll(listOf(Pair(10, 10), Pair(10, 11), Pair(10, 12)))
-            direction = Pair(0, -1)
-            apple = Pair(Random.nextInt(gridSize), Random.nextInt(gridSize))
-            score = 0
-            return
-        }
-
-        snake.add(0, newHead)
-        if (newHead == apple) {
-            apple = Pair(Random.nextInt(gridSize), Random.nextInt(gridSize))
-            score += 10
-        } else {
-            snake.removeAt(snake.size - 1)
         }
     }
 
@@ -99,154 +67,222 @@ class SnakeView(context: Context, attrs: AttributeSet) : View(context, attrs) {
         when (currentState) {
             GameState.MENU -> drawMenu(canvas)
             GameState.PLAYING -> drawGame(canvas)
-            GameState.TIME_UP -> {
-                drawGame(canvas)
-                drawTimeUpScreen(canvas)
-            }
+            GameState.GAMEOVER -> drawGameOver(canvas)
         }
     }
 
-    // 🎨 主選單 (加入四個按鈕)
+    // --- 初始化遊戲 ---
+    private fun initSnake() {
+        snakeBody.clear()
+        score = 0 // 分數歸零
+
+        val startX = (width / 2 / snakeSize.toInt()) * snakeSize.toInt()
+        val startY = (height / 2 / snakeSize.toInt()) * snakeSize.toInt()
+
+        // 預設給蛇三節身體
+        snakeBody.add(Point(startX, startY))
+        snakeBody.add(Point(startX, startY + snakeSize.toInt()))
+        snakeBody.add(Point(startX, startY + 2 * snakeSize.toInt()))
+
+        spawnApple()
+    }
+
+    // --- 隨機生成蘋果 ---
+    private fun spawnApple() {
+        val maxXCount = width / snakeSize.toInt()
+        val maxYCount = height / snakeSize.toInt()
+
+        var newAppleX: Int
+        var newAppleY: Int
+        var isOnSnake: Boolean
+
+        do {
+            newAppleX = (0 until maxXCount).random() * snakeSize.toInt()
+            newAppleY = (0 until maxYCount).random() * snakeSize.toInt()
+            isOnSnake = snakeBody.any { it.x == newAppleX && it.y == newAppleY }
+        } while (isOnSnake)
+
+        apple = Point(newAppleX, newAppleY)
+    }
+
+    // --- 🐍 移動核心邏輯 ---
+    private fun moveSnake() {
+        val head = snakeBody[0]
+        val newHead = Point(head.x, head.y)
+
+        when (direction) {
+            "UP"    -> newHead.y -= snakeSize.toInt()
+            "DOWN"  -> newHead.y += snakeSize.toInt()
+            "LEFT"  -> newHead.x -= snakeSize.toInt()
+            "RIGHT" -> newHead.x += snakeSize.toInt()
+        }
+
+        // 穿牆術邏輯 (無邊界宇宙)
+        val maxX = (width / snakeSize.toInt()) * snakeSize.toInt()
+        val maxY = (height / snakeSize.toInt()) * snakeSize.toInt()
+
+        if (newHead.x < 0) newHead.x = maxX - snakeSize.toInt()
+        else if (newHead.x >= maxX) newHead.x = 0
+
+        if (newHead.y < 0) newHead.y = maxY - snakeSize.toInt()
+        else if (newHead.y >= maxY) newHead.y = 0
+
+        // 💀 自我碰撞偵測 (Game Over 邏輯)
+        // 檢查新算出來的頭部座標，有沒有跟目前身體的任何一個點重疊？
+        val isBitingSelf = snakeBody.any { it.x == newHead.x && it.y == newHead.y }
+
+        if (isBitingSelf) {
+            currentState = GameState.GAMEOVER // 切換到死亡狀態
+            return // 直接中斷這個 function，不要再往下執行了
+        }
+
+        // 如果沒咬到自己，就正常把新頭加進去
+        snakeBody.add(0, newHead)
+
+        if (newHead.x == apple.x && newHead.y == apple.y) {
+            // 吃到了！分數加一，產生新蘋果
+            score++
+            spawnApple()
+        } else {
+            // 沒吃到！移除尾巴
+            snakeBody.removeAt(snakeBody.size - 1)
+        }
+    }
+
+    // --- 繪圖模組區 ---
     private fun drawMenu(canvas: Canvas) {
+        canvas.drawColor(Color.parseColor("#263238")) // 深色質感背景
+        val centerX = width / 2f
+        val centerY = height / 2f
+
         paintText.textSize = 120f
         paintText.color = Color.parseColor("#FFF176")
-        canvas.drawText("🐍 選擇遊玩時間", width / 2f, height / 2f - 550f, paintText)
+        canvas.drawText("🐍 選擇遊玩時間", centerX, centerY - 550f, paintText)
 
-        // 重新排版，畫出四個按鈕
-        drawButton(canvas, "15 分鐘", height / 2f - 350f, Color.parseColor("#81C784"))
-        drawButton(canvas, "30 分鐘", height / 2f - 150f, Color.parseColor("#64B5F6"))
-        drawButton(canvas, "45 分鐘", height / 2f + 50f, Color.parseColor("#E57373"))
-        drawButton(canvas, "不限制", height / 2f + 250f, Color.parseColor("#BCAAA4")) // 溫暖的棕色
+        drawButton(canvas, "15 分鐘", centerY - 350f, "#81C784")
+        drawButton(canvas, "30 分鐘", centerY - 150f, "#64B5F6")
+        drawButton(canvas, "45 分鐘", centerY + 50f, "#E57373")
+        drawButton(canvas, "不限制", centerY + 250f, "#BCAAA4")
     }
 
-    private fun drawButton(canvas: Canvas, text: String, y: Float, color: Int) {
-        val cx = width / 2f
-        val bw = 350f
-        val bh = 80f
-        paintDetails.color = color
-        canvas.drawRoundRect(cx - bw, y - bh, cx + bw, y + bh, 50f, 50f, paintDetails)
-        paintText.textSize = 80f
+    private fun drawButton(canvas: Canvas, text: String, y: Float, colorHex: String) {
+        paintSnake.color = Color.parseColor(colorHex)
+        canvas.drawRoundRect(width / 2f - 300f, y - 60f, width / 2f + 300f, y + 60f, 30f, 30f, paintSnake)
         paintText.color = Color.WHITE
-        canvas.drawText(text, cx, y + 25f, paintText)
+        paintText.textSize = 60f
+        canvas.drawText(text, width / 2f, y + 20f, paintText)
     }
 
-    // 🎨 休息畫面
-    private fun drawTimeUpScreen(canvas: Canvas) {
-        paintDetails.color = Color.parseColor("#EE000000") // 稍微加深一點黑色遮罩
-        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), paintDetails)
-
-        paintText.textSize = 130f
-        paintText.color = Color.parseColor("#FFF176")
-        canvas.drawText("🌙 時間到囉", width / 2f, height / 2f - 100f, paintText)
-
-        paintText.textSize = 80f
-        paintText.color = Color.WHITE
-        canvas.drawText("蛇寶寶要去睡覺了", width / 2f, height / 2f + 50f, paintText)
-        canvas.drawText("請讓眼睛休息一下喔！", width / 2f, height / 2f + 180f, paintText)
-    }
-
-    // 🎨 遊戲畫面
     private fun drawGame(canvas: Canvas) {
-        val cellW = width.toFloat() / gridSize
-        val cellH = height.toFloat() / gridSize
-        val borderRadius = cellW / 4f
+        canvas.drawColor(Color.parseColor("#1B5E20")) // 草地綠背景
 
-        paintText.color = Color.WHITE
-        paintText.textSize = 100f
-        canvas.drawText("🍎 分數: $score", width / 2f, 220f, paintText)
+        // 畫蘋果
+        paintSnake.color = Color.RED
+        val radius = snakeSize / 2.5f
+        val cx = apple.x + snakeSize / 2f
+        val cy = apple.y + snakeSize / 2f
+        canvas.drawCircle(cx, cy, radius, paintSnake)
 
-        paintText.textAlign = Paint.Align.RIGHT
-        paintText.textSize = 120f
-        if (isPaused) canvas.drawText("▶️", width - 50f, 220f, paintText)
-        else canvas.drawText("⏸️", width - 50f, 220f, paintText)
-        paintText.textAlign = Paint.Align.CENTER
+        paintSnake.color = Color.GREEN
+        canvas.drawCircle(cx + 15f, cy - 25f, 10f, paintSnake)
 
-        if (isPaused && currentState == GameState.PLAYING) {
-            paintText.color = Color.parseColor("#FFF176")
-            paintText.textSize = 150f
-            canvas.drawText("遊戲暫停", width / 2f, height / 2f, paintText)
-        }
-
-        val ax = apple.first * cellW + 4
-        val ay = apple.second * cellH + 4
-        val aw = cellW - 8
-        val ah = cellH - 8
-        canvas.drawRoundRect(ax, ay, ax + aw, ay + ah, borderRadius, borderRadius, paintApple)
-        paintDetails.color = Color.parseColor("#8D6E63")
-        canvas.drawRect(ax + aw/2f - 2, ay - 10, ax + aw/2f + 2, ay + 5, paintDetails)
-        paintDetails.color = Color.parseColor("#66BB6A")
-        canvas.drawCircle(ax + aw/2f + 10, ay - 10, 10f, paintDetails)
-
-        for (i in snake.indices) {
-            val pos = snake[i]
-            val sx = pos.first * cellW + 2
-            val sy = pos.second * cellH + 2
-            val sw = cellW - 4
-            val sh = cellH - 4
-
-            canvas.drawRoundRect(sx, sy, sx + sw, sy + sh, borderRadius, borderRadius, paintBody)
-
+        // 畫蛇
+        for (i in snakeBody.indices) {
+            val part = snakeBody[i]
             if (i == 0) {
-                canvas.drawRoundRect(sx, sy, sx + sw, sy + sh, borderRadius, borderRadius, paintHead)
-                paintDetails.color = Color.WHITE
-                val eyeRadius = sw / 6f
-                canvas.drawCircle(sx + sw/3f, sy + sh/3f, eyeRadius, paintDetails)
-                canvas.drawCircle(sx + 2*sw/3f, sy + sh/3f, eyeRadius, paintDetails)
-                paintDetails.color = Color.BLACK
-                canvas.drawCircle(sx + sw/3f, sy + sh/3f, eyeRadius/2f, paintDetails)
-                canvas.drawCircle(sx + 2*sw/3f, sy + sh/3f, eyeRadius/2f, paintDetails)
+                // 畫蛇頭
+                paintSnake.color = Color.YELLOW
+                canvas.drawRoundRect(part.x.toFloat(), part.y.toFloat(),
+                    part.x + snakeSize, part.y + snakeSize, 20f, 20f, paintSnake)
+                // 畫眼睛
+                paintSnake.color = Color.BLACK
+                canvas.drawCircle(part.x + 30f, part.y + 30f, 10f, paintSnake)
+                canvas.drawCircle(part.x + 70f, part.y + 30f, 10f, paintSnake)
+            } else {
+                // 畫蛇身
+                paintSnake.color = Color.parseColor("#A5D6A7")
+                canvas.drawRoundRect(part.x.toFloat() + 5f, part.y.toFloat() + 5f,
+                    part.x + snakeSize - 5f, part.y + snakeSize - 5f, 15f, 15f, paintSnake)
             }
         }
+
+        // 🏆 畫出精美的視覺化記分板
+        paintSnake.color = Color.parseColor("#80000000")
+        canvas.drawRoundRect(width / 2f - 220f, 40f, width / 2f + 220f, 160f, 40f, 40f, paintSnake)
+        paintText.textSize = 80f
+        paintText.color = Color.WHITE
+        canvas.drawText("🍎 : $score", width / 2f, 125f, paintText)
     }
 
-    override fun onTouchEvent(event: MotionEvent): Boolean {
-        when (currentState) {
-            // 1️⃣ 選單觸控判定 (更新為四個按鈕)
-            GameState.MENU -> {
-                if (event.action == MotionEvent.ACTION_DOWN) {
-                    val cx = width / 2f
-                    val y1 = height / 2f - 350f
-                    val y2 = height / 2f - 150f
-                    val y3 = height / 2f + 50f
-                    val y4 = height / 2f + 250f
-                    val bw = 350f
-                    val bh = 80f
+    private fun drawGameOver(canvas: Canvas) {
+        // 💀 進階的遊戲結束畫面
+        canvas.drawColor(Color.parseColor("#B71C1C")) // 暗紅色警告背景
 
-                    if (event.x in (cx - bw)..(cx + bw)) {
-                        if (event.y in (y1 - bh)..(y1 + bh)) startGame(15)
-                        else if (event.y in (y2 - bh)..(y2 + bh)) startGame(30)
-                        else if (event.y in (y3 - bh)..(y3 + bh)) startGame(45)
-                        else if (event.y in (y4 - bh)..(y4 + bh)) startGame(-1) // 啟動不限制模式！
+        paintText.color = Color.WHITE
+        paintText.textSize = 150f
+        canvas.drawText("Oops!", width / 2f, height / 2f - 200f, paintText)
+
+        // 顯示最終分數
+        paintText.textSize = 80f
+        canvas.drawText("總共吃了 $score 顆蘋果 🍎", width / 2f, height / 2f, paintText)
+
+        // 提示玩家如何重來
+        paintText.textSize = 60f
+        paintText.color = Color.parseColor("#FFF176") // 黃色提示字
+        canvas.drawText("點擊螢幕回到主選單", width / 2f, height / 2f + 200f, paintText)
+    }
+
+    // --- 👆 互動邏輯區 (點擊與滑動偵測) ---
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        when (event.action) {
+            MotionEvent.ACTION_DOWN -> {
+                touchStartX = event.x
+                touchStartY = event.y
+
+                // 💀 如果在 Game Over 畫面點擊螢幕，就回到選單
+                if (currentState == GameState.GAMEOVER) {
+                    currentState = GameState.MENU
+                    invalidate() // 重新畫出選單
+                    return true  // 攔截這次點擊，不往下執行
+                }
+
+                if (currentState == GameState.MENU) {
+                    val centerY = height / 2f
+                    if (event.y in (centerY - 410f)..(centerY + 310f)) {
+                        initSnake()
+                        direction = "UP" // 預設往上游
+                        currentState = GameState.PLAYING
+                        gameHandler.removeCallbacks(gameLoop)
+                        gameHandler.post(gameLoop)
+                        invalidate()
                     }
                 }
             }
-            // 2️⃣ 遊玩觸控判定
-            GameState.PLAYING -> {
-                if (event.action == MotionEvent.ACTION_DOWN) {
-                    if (event.x in (width - 200f)..(width - 10f) && event.y in 100f..300f) {
-                        isPaused = !isPaused
-                        return true
-                    }
-                    startX = event.x
-                    startY = event.y
-                } else if (event.action == MotionEvent.ACTION_UP) {
-                    if (isPaused) return true
-                    val dx = event.x - startX
-                    val dy = event.y - startY
-                    if (abs(dx) > 50 || abs(dy) > 50) {
+
+            MotionEvent.ACTION_UP -> {
+                if (currentState == GameState.PLAYING) {
+                    val dx = event.x - touchStartX
+                    val dy = event.y - touchStartY
+
+                    if (abs(dx) > swipeThreshold || abs(dy) > swipeThreshold) {
                         if (abs(dx) > abs(dy)) {
-                            if (dx > 0 && direction != Pair(-1, 0)) direction = Pair(1, 0)
-                            else if (dx < 0 && direction != Pair(1, 0)) direction = Pair(-1, 0)
+                            // 防呆：不能瞬間 180 度回頭
+                            if (dx > 0 && direction != "LEFT") direction = "RIGHT"
+                            else if (dx < 0 && direction != "RIGHT") direction = "LEFT"
                         } else {
-                            if (dy > 0 && direction != Pair(0, -1)) direction = Pair(0, 1)
-                            else if (dy < 0 && direction != Pair(0, 1)) direction = Pair(0, -1)
+                            if (dy > 0 && direction != "UP") direction = "DOWN"
+                            else if (dy < 0 && direction != "DOWN") direction = "UP"
                         }
                     }
                 }
             }
-            // 3️⃣ 時間到鎖死
-            GameState.TIME_UP -> { }
         }
         return true
+    }
+
+    // --- 系統生命週期管理 ---
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        gameHandler.removeCallbacks(gameLoop)
     }
 }
