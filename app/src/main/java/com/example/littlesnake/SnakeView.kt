@@ -12,9 +12,9 @@ import android.view.MotionEvent
 import android.view.View
 import kotlin.math.abs
 
-// 1. 定義遊戲狀態機
+// 1. ⏸️ 暫停機制：定義遊戲狀態機 (新增 PAUSED 狀態)
 enum class GameState {
-    MENU, PLAYING, GAMEOVER
+    MENU, PLAYING, PAUSED, GAMEOVER
 }
 
 class SnakeView(context: Context, attrs: AttributeSet) : View(context, attrs) {
@@ -28,10 +28,14 @@ class SnakeView(context: Context, attrs: AttributeSet) : View(context, attrs) {
     private var apple = Point(-100, -100)
     private var score = 0
 
+    // 💾 最高紀錄機制
+    private val sharedPreferences = context.getSharedPreferences("SnakeGamePrefs", Context.MODE_PRIVATE)
+    private var highScore = sharedPreferences.getInt("HIGH_SCORE", 0)
+
     // --- 🚀 動力系統變數 ---
     private val gameHandler = Handler(Looper.getMainLooper())
     private var direction = "UP"
-    private val delayMillis = 400L // 🐢 慢速友善：每 0.4 秒移動一格
+    private val delayMillis = 400L // 🐢 慢速友善
 
     // --- 👆 滑動偵測變數 ---
     private var touchStartX = 0f
@@ -47,14 +51,13 @@ class SnakeView(context: Context, attrs: AttributeSet) : View(context, attrs) {
         isAntiAlias = true
     }
 
-    // --- 節拍器邏輯 (遊戲循環 Game Loop) ---
+    // --- 節拍器邏輯 (遊戲循環) ---
     private val gameLoop = object : Runnable {
         override fun run() {
             if (currentState == GameState.PLAYING) {
                 moveSnake()
                 invalidate()
 
-                // 只有在還活著 (PLAYING) 的時候，才預約下一次移動
                 if (currentState == GameState.PLAYING) {
                     gameHandler.postDelayed(this, delayMillis)
                 }
@@ -66,7 +69,14 @@ class SnakeView(context: Context, attrs: AttributeSet) : View(context, attrs) {
         super.onDraw(canvas)
         when (currentState) {
             GameState.MENU -> drawMenu(canvas)
-            GameState.PLAYING -> drawGame(canvas)
+            GameState.PLAYING -> {
+                drawGame(canvas)
+                drawPauseButton(canvas) // ⏸️ 畫出右上角的暫停鈕
+            }
+            GameState.PAUSED -> {
+                drawGame(canvas) // 先畫出原本的遊戲畫面當底圖
+                drawPausedScreen(canvas) // ⏸️ 疊加暫停選單
+            }
             GameState.GAMEOVER -> drawGameOver(canvas)
         }
     }
@@ -74,12 +84,11 @@ class SnakeView(context: Context, attrs: AttributeSet) : View(context, attrs) {
     // --- 初始化遊戲 ---
     private fun initSnake() {
         snakeBody.clear()
-        score = 0 // 分數歸零
+        score = 0
 
         val startX = (width / 2 / snakeSize.toInt()) * snakeSize.toInt()
         val startY = (height / 2 / snakeSize.toInt()) * snakeSize.toInt()
 
-        // 預設給蛇三節身體
         snakeBody.add(Point(startX, startY))
         snakeBody.add(Point(startX, startY + snakeSize.toInt()))
         snakeBody.add(Point(startX, startY + 2 * snakeSize.toInt()))
@@ -117,7 +126,6 @@ class SnakeView(context: Context, attrs: AttributeSet) : View(context, attrs) {
             "RIGHT" -> newHead.x += snakeSize.toInt()
         }
 
-        // 穿牆術邏輯 (無邊界宇宙)
         val maxX = (width / snakeSize.toInt()) * snakeSize.toInt()
         val maxY = (height / snakeSize.toInt()) * snakeSize.toInt()
 
@@ -127,31 +135,30 @@ class SnakeView(context: Context, attrs: AttributeSet) : View(context, attrs) {
         if (newHead.y < 0) newHead.y = maxY - snakeSize.toInt()
         else if (newHead.y >= maxY) newHead.y = 0
 
-        // 💀 自我碰撞偵測 (Game Over 邏輯)
-        // 檢查新算出來的頭部座標，有沒有跟目前身體的任何一個點重疊？
         val isBitingSelf = snakeBody.any { it.x == newHead.x && it.y == newHead.y }
 
         if (isBitingSelf) {
-            currentState = GameState.GAMEOVER // 切換到死亡狀態
-            return // 直接中斷這個 function，不要再往下執行了
+            if (score > highScore) {
+                highScore = score
+                sharedPreferences.edit().putInt("HIGH_SCORE", highScore).apply()
+            }
+            currentState = GameState.GAMEOVER
+            return
         }
 
-        // 如果沒咬到自己，就正常把新頭加進去
         snakeBody.add(0, newHead)
 
         if (newHead.x == apple.x && newHead.y == apple.y) {
-            // 吃到了！分數加一，產生新蘋果
             score++
             spawnApple()
         } else {
-            // 沒吃到！移除尾巴
             snakeBody.removeAt(snakeBody.size - 1)
         }
     }
 
     // --- 繪圖模組區 ---
     private fun drawMenu(canvas: Canvas) {
-        canvas.drawColor(Color.parseColor("#263238")) // 深色質感背景
+        canvas.drawColor(Color.parseColor("#263238"))
         val centerX = width / 2f
         val centerY = height / 2f
 
@@ -159,10 +166,14 @@ class SnakeView(context: Context, attrs: AttributeSet) : View(context, attrs) {
         paintText.color = Color.parseColor("#FFF176")
         canvas.drawText("🐍 選擇遊玩時間", centerX, centerY - 550f, paintText)
 
-        drawButton(canvas, "15 分鐘", centerY - 350f, "#81C784")
-        drawButton(canvas, "30 分鐘", centerY - 150f, "#64B5F6")
-        drawButton(canvas, "45 分鐘", centerY + 50f, "#E57373")
-        drawButton(canvas, "不限制", centerY + 250f, "#BCAAA4")
+        paintText.textSize = 70f
+        paintText.color = Color.parseColor("#A5D6A7")
+        canvas.drawText("👑 最高紀錄: $highScore 🍎", centerX, centerY - 400f, paintText)
+
+        drawButton(canvas, "15 分鐘", centerY - 200f, "#81C784")
+        drawButton(canvas, "30 分鐘", centerY, "#64B5F6")
+        drawButton(canvas, "45 分鐘", centerY + 200f, "#E57373")
+        drawButton(canvas, "不限制", centerY + 400f, "#BCAAA4")
     }
 
     private fun drawButton(canvas: Canvas, text: String, y: Float, colorHex: String) {
@@ -174,9 +185,8 @@ class SnakeView(context: Context, attrs: AttributeSet) : View(context, attrs) {
     }
 
     private fun drawGame(canvas: Canvas) {
-        canvas.drawColor(Color.parseColor("#1B5E20")) // 草地綠背景
+        canvas.drawColor(Color.parseColor("#1B5E20"))
 
-        // 畫蘋果
         paintSnake.color = Color.RED
         val radius = snakeSize / 2.5f
         val cx = apple.x + snakeSize / 2f
@@ -186,27 +196,23 @@ class SnakeView(context: Context, attrs: AttributeSet) : View(context, attrs) {
         paintSnake.color = Color.GREEN
         canvas.drawCircle(cx + 15f, cy - 25f, 10f, paintSnake)
 
-        // 畫蛇
         for (i in snakeBody.indices) {
             val part = snakeBody[i]
             if (i == 0) {
-                // 畫蛇頭
                 paintSnake.color = Color.YELLOW
                 canvas.drawRoundRect(part.x.toFloat(), part.y.toFloat(),
                     part.x + snakeSize, part.y + snakeSize, 20f, 20f, paintSnake)
-                // 畫眼睛
                 paintSnake.color = Color.BLACK
                 canvas.drawCircle(part.x + 30f, part.y + 30f, 10f, paintSnake)
                 canvas.drawCircle(part.x + 70f, part.y + 30f, 10f, paintSnake)
             } else {
-                // 畫蛇身
                 paintSnake.color = Color.parseColor("#A5D6A7")
                 canvas.drawRoundRect(part.x.toFloat() + 5f, part.y.toFloat() + 5f,
                     part.x + snakeSize - 5f, part.y + snakeSize - 5f, 15f, 15f, paintSnake)
             }
         }
 
-        // 🏆 畫出精美的視覺化記分板
+        // 畫出記分板
         paintSnake.color = Color.parseColor("#80000000")
         canvas.drawRoundRect(width / 2f - 220f, 40f, width / 2f + 220f, 160f, 40f, 40f, paintSnake)
         paintText.textSize = 80f
@@ -214,43 +220,93 @@ class SnakeView(context: Context, attrs: AttributeSet) : View(context, attrs) {
         canvas.drawText("🍎 : $score", width / 2f, 125f, paintText)
     }
 
+    // ⏸️ 畫出右上角的暫停按鈕
+    private fun drawPauseButton(canvas: Canvas) {
+        val btnX = width - 100f
+        val btnY = 100f
+        // 畫一個白色的半透明圓底
+        paintSnake.color = Color.parseColor("#80FFFFFF")
+        canvas.drawCircle(btnX, btnY, 60f, paintSnake)
+
+        // 畫出兩條線 (⏸ 符號)
+        paintSnake.color = Color.BLACK
+        canvas.drawRect(btnX - 25f, btnY - 25f, btnX - 10f, btnY + 25f, paintSnake)
+        canvas.drawRect(btnX + 10f, btnY - 25f, btnX + 25f, btnY + 25f, paintSnake)
+    }
+
+    // ⏸️ 畫出暫停時的半透明覆蓋選單
+    private fun drawPausedScreen(canvas: Canvas) {
+        // 鋪上一層半透明的黑色遮罩，讓後面的遊戲畫面變暗
+        paintSnake.color = Color.parseColor("#B3000000") // 70% 透明度的黑色
+        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), paintSnake)
+
+        paintText.textSize = 120f
+        paintText.color = Color.parseColor("#FFF176")
+        canvas.drawText("遊戲暫停 ⏸️", width / 2f, height / 2f - 100f, paintText)
+
+        paintText.textSize = 60f
+        paintText.color = Color.WHITE
+        canvas.drawText("點擊螢幕任何地方繼續", width / 2f, height / 2f + 100f, paintText)
+    }
+
     private fun drawGameOver(canvas: Canvas) {
-        // 💀 進階的遊戲結束畫面
-        canvas.drawColor(Color.parseColor("#B71C1C")) // 暗紅色警告背景
+        canvas.drawColor(Color.parseColor("#B71C1C"))
 
         paintText.color = Color.WHITE
         paintText.textSize = 150f
-        canvas.drawText("Oops!", width / 2f, height / 2f - 200f, paintText)
+        canvas.drawText("Oops!", width / 2f, height / 2f - 300f, paintText)
 
-        // 顯示最終分數
         paintText.textSize = 80f
-        canvas.drawText("總共吃了 $score 顆蘋果 🍎", width / 2f, height / 2f, paintText)
+        canvas.drawText("本次得分: $score 🍎", width / 2f, height / 2f - 100f, paintText)
 
-        // 提示玩家如何重來
+        paintText.color = Color.parseColor("#FFF176")
+        canvas.drawText("👑 最高紀錄: $highScore 🍎", width / 2f, height / 2f + 50f, paintText)
+
         paintText.textSize = 60f
-        paintText.color = Color.parseColor("#FFF176") // 黃色提示字
-        canvas.drawText("點擊螢幕回到主選單", width / 2f, height / 2f + 200f, paintText)
+        paintText.color = Color.WHITE
+        canvas.drawText("點擊螢幕回到主選單", width / 2f, height / 2f + 250f, paintText)
     }
 
-    // --- 👆 互動邏輯區 (點擊與滑動偵測) ---
+    // --- 👆 互動邏輯區 ---
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.action) {
             MotionEvent.ACTION_DOWN -> {
                 touchStartX = event.x
                 touchStartY = event.y
 
-                // 💀 如果在 Game Over 畫面點擊螢幕，就回到選單
+                // 💀 Game Over 畫面點擊回選單
                 if (currentState == GameState.GAMEOVER) {
                     currentState = GameState.MENU
-                    invalidate() // 重新畫出選單
-                    return true  // 攔截這次點擊，不往下執行
+                    invalidate()
+                    return true
                 }
 
+                // ⏸️ 暫停畫面點擊恢復遊戲
+                if (currentState == GameState.PAUSED) {
+                    currentState = GameState.PLAYING
+                    // 重新啟動節拍器！先 remove 確保不會有兩個節拍器同時跑
+                    gameHandler.removeCallbacks(gameLoop)
+                    gameHandler.post(gameLoop)
+                    invalidate()
+                    return true
+                }
+
+                // ⏸️ 遊戲進行中：檢查是否點擊右上角暫停按鈕
+                if (currentState == GameState.PLAYING) {
+                    // 判斷點擊位置是否在右上角 (寬 200px, 高 200px 範圍內)
+                    if (event.x > width - 200f && event.y < 200f) {
+                        currentState = GameState.PAUSED
+                        invalidate() // 重新畫圖，就會畫出暫停遮罩
+                        return true  // 攔截點擊，不要去算滑動了
+                    }
+                }
+
+                // 主選單點擊開始遊戲
                 if (currentState == GameState.MENU) {
                     val centerY = height / 2f
-                    if (event.y in (centerY - 410f)..(centerY + 310f)) {
+                    if (event.y in (centerY - 260f)..(centerY + 460f)) {
                         initSnake()
-                        direction = "UP" // 預設往上游
+                        direction = "UP"
                         currentState = GameState.PLAYING
                         gameHandler.removeCallbacks(gameLoop)
                         gameHandler.post(gameLoop)
@@ -266,7 +322,6 @@ class SnakeView(context: Context, attrs: AttributeSet) : View(context, attrs) {
 
                     if (abs(dx) > swipeThreshold || abs(dy) > swipeThreshold) {
                         if (abs(dx) > abs(dy)) {
-                            // 防呆：不能瞬間 180 度回頭
                             if (dx > 0 && direction != "LEFT") direction = "RIGHT"
                             else if (dx < 0 && direction != "RIGHT") direction = "LEFT"
                         } else {
@@ -280,7 +335,6 @@ class SnakeView(context: Context, attrs: AttributeSet) : View(context, attrs) {
         return true
     }
 
-    // --- 系統生命週期管理 ---
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
         gameHandler.removeCallbacks(gameLoop)
